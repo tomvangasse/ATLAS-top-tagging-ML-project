@@ -1,8 +1,50 @@
+# Top-quark jet tagging on ATLAS Open Data
+
+Does a more accurate top tagger come at the cost of robustness to systematic uncertainties?
+
+I made an XGboost model, and a PyTorch model, and ran them without retraining, on simulated samples. Varying the way the simulated detector works, and how the model predicts events on test data, tests the models' robustness.
+
+## Headline result
+   
+| Model | R50 (nominal) | Change under detector variations | Change under shower model |
+|---|---|---|---|
+| XGBoost | 36.3 | < 0.5% | about +8.7% |
+| MLP | 37.8 | < 0.5% | about +5.9% |
+
+
+## The physics problem
+   
+When colliding particles at near the speed of light, there is a lot of important data to gather from the particle jets that result from the collision. To gain insight from these jets, we need to be able to differentiate between jets that resulted from different particles. This is where jet taggers come in.
+
+I'm testing models on their ability to find top-quark jets, top-quark jet taggers like this are used in searches for new heavy particles that decay to top quarks.
+
+Real world data is possible to use for training tagging models, because the data isn't labelled - we can't tell the model how wrong it is while it's training. This is why physics simulations need to be used to get labelled samples for training. There is a problem with this: **physics simulations can make close predictions of real world events, but won't always be completely accurate to what we measure in real life.**
+
+So, to make sure these models trained on simulated data will work well with real world data, they are tested on more data from simulations that have slight variations, such as:
+- Simulation type (Herwig or Pythia 8)
+- Detector variations (energy scale, resolution)
+
+This is robustness, if a model performs well tested on varying simulated data, we know it is more likely to perform well with real life data.
+
+### Definitions and explainations
+
+Signal efficiency:
+- A top tagger gives a 0-1 range of how much it believes each jet is a top jet
+- To use this, you have to set a threshold, above which, you interpret its output as a yes rather than a no
+- Choosing the threshold so it keeps 50% of the real top jets, would be 50% signal efficiency
+
+R50 is the background rejection at 50% signal efficiency:
+- background rejection = 1/(fraction of background jets accepted)
+- An R50 of 36.3 means that 1 in 36.3 background jets pass through at 50% signal efficiency
+
+QCD jets is another name for background jets, it stands for **Quantum Chromodynamics**
+
+
 ## Data
 
-All the data comes from the [ATLAS Top Tagging Open Data Set](https://opendata.cern.ch/record/80030), which CERN released publicly in 2024. It's simulated, so every jet comes with a label saying whether it really came from a top quark or not. That label is exactly what's missing from real collision data. ATLAS describe how the dataset was made in [their paper](https://arxiv.org/abs/2407.20127).
+All the data comes from the [ATLAS Top Tagging Open Data Set](https://opendata.cern.ch/record/80030), which CERN released publicly in 2024. It's simulated, so every jet comes with a label saying whether it really came from a top quark or not. That label is what's missing from real collision data. ATLAS describe how the dataset was made in [their paper](https://arxiv.org/abs/2407.20127).
 
-The full dataset is huge (over 900 training files), so I worked with a small slice of it:
+The full dataset consists of over 900 training files, so I worked with a small slice of it:
 
 | File | What I used it for |
 |---|---|
@@ -15,18 +57,14 @@ The full dataset is huge (over 900 training files), so I worked with a small sli
 
 Each jet comes with 15 numbers that describe its shape on the inside, called its **substructure**. This is where the physics is. A top quark decays into three quarks, so a top jet usually has **three clumps of energy** inside it, while a background jet usually has just one. The features measure this in different ways:
 
-| Features | What they measure, roughly |
+| Features | What they measure |
 |---|---|
-| `fjet_ECF1`, `fjet_ECF2`, `fjet_ECF3`, `fjet_C2`, `fjet_D2`, `fjet_L2`, `fjet_L3` | How the jet's energy is shared out between pairs and triples of particles. Ratios such as D2 are good at telling one-clump jets from multi-clump jets. |
-| `fjet_Tau1_wta` … `fjet_Tau4_wta` | How well the jet fits 1, 2, 3 or 4 clumps. A top jet fits three clumps much better than one. |
-| `fjet_Split12`, `fjet_Split23` | How much energy it takes to split the jet into 2 clumps, then into 3. |
-| `fjet_Qw` | The mass of the most W-boson-like pair of clumps. A top quark decays via a W boson, so top jets often have a pair with about the W mass. |
-| `fjet_ThrustMaj` | How "pencil-like" or spread out the jet is. |
+| `fjet_ECF1`, `fjet_ECF2`, `fjet_ECF3`, `fjet_C2`, `fjet_D2`, `fjet_L2`, `fjet_L3` | How the jet's energy is shared out between pairs and triples of particles. These are good at telling one-clump jets from multi-clump jets |
+| `fjet_Tau1_wta` … `fjet_Tau4_wta` | How well the jet fits 1, 2, 3 or 4 clumps. A top jet fits three clumps much better than one |
+| `fjet_Split12`, `fjet_Split23` | How much energy it takes to split the jet into 2 clumps, then into 3 |
+| `fjet_Qw` | The mass of the most W-boson-like pair of clumps. A top quark decays via a W boson, so top jets often have a pair with about the W mass |
+| `fjet_ThrustMaj` | How spread out the jet is |
 
-### What I left out
-- **`fjet_pt`, `fjet_eta` and `fjet_phi`** describe how fast the jet is going and in which direction, not its shape. I wanted both models to learn what a top jet *looks like inside*, not where it happened to go.
-- **`EventInfo_mcEventNumber`** is just an ID number for each simulated collision. I only used it to check which files contain the same jets.
-- **`fjet_m`**, the jet's mass, is very powerful, but I kept it out so the models rely on the substructure. Adding it back is an easy extra experiment.
 
 Each training jet also has a **training weight**, and the dataset asks for these to be used during training, so both models use them. The test files don't have weights, so every test jet counts equally.
 
@@ -44,11 +82,11 @@ XGBoost builds lots of small decision trees one after another. Each new tree foc
 
 The neural network is a small **multi-layer perceptron**. The 15 features go in, pass through 3 layers of 64 neurons, and one number comes out, which is turned into a probability between 0 and 1. It has about 9,400 adjustable weights in total. The model is defined in `src/models.py`.
 
-- **Scaling first.** Unlike trees, neural networks care about the size of the numbers they're given, and some of these features are in the millions while others sit between 0 and 1. A `QuantileTransformer` reshapes every feature into a bell curve first. It learns how to do this from the training data only, and the same scaling is then reused on every other file.
+- **Scaling.** Unlike trees, neural networks care about the size of the numbers they're given, and some of these features are in the millions while others sit between 0 and 1. A `QuantileTransformer` reshapes every feature into a bell curve first. It learns how to do this from the training data only, and the same scaling is then reused on every other file.
 - **Training.** Weighted binary cross-entropy loss (the same loss XGBoost uses), the Adam optimiser with a learning rate of 0.001, and batches of 1024 jets.
 - **Dropout** switches off a random 10% of neurons during training, which stops the network from memorising the training jets.
 - **Early stopping.** Training stops once the validation loss hasn't improved for 5 epochs, and the best version is kept. It stopped after 55 epochs.
-- **A fair fight.** Both models use exactly the same training jets, features and train/validation split (`random_state=1`), so any difference comes from the model, not the data.
+- **A fair fight.** Both models use exactly the same training jets, features and train/validation split (`random_state=1`), so any difference comes from the model instead of the data.
 
 ![ROC comparison](plots/roc_comparison.png)
 
@@ -56,7 +94,7 @@ The neural network is a small **multi-layer perceptron**. The 15 features go in,
 
 ### Robustness test (notebooks/04_robustness.ipynb)
 
-Neither model is retrained here. The trained models are simply run on simulations where one thing has been changed, and I measure how much the background rejection moves.
+Neither model is retrained here. The trained models just run on simulations where one thing has been changed, it then measures how much the background rejection moves.
 
 | Variation | What's changed | Type |
 |---|---|---|
@@ -95,7 +133,7 @@ Once the comparisons were fair, the detector effects shrank to under half a perc
 | **Control:** second nominal file vs first | +4.00% | −0.47% | −1.00% | −1.74% |
 | Shower model (`angular` vs nominal average) | +8.66% | +5.87% | +7.27% | +5.72% |
 
-The notebook saves this table as `robustness_corrected.csv`.
+The notebook saves this table as `robustness_corrected.csv` in the mounted drive.
 
 ### What this means
 
@@ -103,7 +141,7 @@ The notebook saves this table as `robustness_corrected.csv`.
 - **The detector variations hardly matter.** Shifting the energy scale or the resolution changes rejection by less than half a percent for both models.
 - **The shower model is by far the biggest effect.** Changing how the jet's insides are simulated moves rejection by 6–9%, more than ten times the detector effects. This is exactly the worry from the start: if the simulation of jet substructure is slightly off, a substructure-based tagger's performance changes with it.
 - **Rejection going *up* isn't good news.** On the `angular` sample both taggers rejected *more* background. That doesn't mean they got better. It means their performance depends on which simulation you believe, and in a real analysis that becomes an uncertainty on the result.
-- **So, does accuracy cost robustness here? No sign of it.** The more accurate model (the neural network) also moved less under the shower model. But the gap (about 3 percentage points at 50%, 1.5 at 80%) is about the same size as the control's movement, which was up to 4%. So I can't honestly claim it's more robust, only that being more accurate didn't make it *less* robust.
+- **Does accuracy cost robustness?** Not here. The more accurate model (the neural network) also moved less under the shower model. But the gap (about 3 percentage points at 50%, 1.5 at 80%) is about the same size as the control's movement, which was up to 4%. So I can't honestly claim it's more robust, only that being more accurate didn't make it *less* robust.
 
 ## Limitations
 
